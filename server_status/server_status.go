@@ -37,11 +37,12 @@ type collector struct {
 
 	// Previous network stats for calculating rates
 	prevNetStats map[string]net.IOCountersStat
-	prevTime     time.Time
+	prevNetTime  time.Time
 	mu           sync.Mutex
 
 	// Previous disk stats for calculating IOPS
 	prevDiskStats map[string]disk.IOCountersStat
+	prevDiskTime  time.Time
 }
 
 // newCollector creates a new server status collector
@@ -85,8 +86,9 @@ func newCollector(serverName string) *collector {
 		),
 		serverName:    serverName,
 		prevNetStats:  make(map[string]net.IOCountersStat),
+		prevNetTime:   time.Now(),
 		prevDiskStats: make(map[string]disk.IOCountersStat),
-		prevTime:      time.Now(),
+		prevDiskTime:  time.Now(),
 	}
 }
 
@@ -204,6 +206,40 @@ func (c *collector) collectMemory(ch chan<- prometheus.Metric) {
 	}
 }
 
+// isVirtualInterface checks if a network interface is virtual
+func (c *collector) isVirtualInterface(name string) bool {
+	// Common virtual interface patterns
+	virtualPrefixes := []string{
+		"lo",      // loopback
+		"docker",  // Docker bridge
+		"veth",    // Virtual Ethernet (Docker, K8s)
+		"br-",     // Linux bridge
+		"virbr",   // libvirt bridge
+		"vnet",    // Virtual network (KVM/QEMU)
+		"tun",     // TUN devices (VPN)
+		"tap",     // TAP devices
+		"cni",     // Container Network Interface (K8s)
+		"flannel", // Flannel network (K8s)
+		"calico",  // Calico network (K8s)
+		"weave",   // Weave network (K8s)
+		"kube",    // Kubernetes interfaces
+		"cilium",  // Cilium network (K8s)
+		"lxc",     // LXC containers
+		"lxd",     // LXD containers
+		"vmbr",    // Proxmox bridge
+		"vmnet",   // VMware network
+		"ppp",     // Point-to-Point Protocol
+	}
+
+	for _, prefix := range virtualPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // collectNetwork collects network traffic metrics
 func (c *collector) collectNetwork(ch chan<- prometheus.Metric) {
 	c.mu.Lock()
@@ -216,7 +252,7 @@ func (c *collector) collectNetwork(ch chan<- prometheus.Metric) {
 	}
 
 	now := time.Now()
-	timeDiff := now.Sub(c.prevTime).Seconds()
+	timeDiff := now.Sub(c.prevNetTime).Seconds()
 
 	if timeDiff <= 0 {
 		return
@@ -225,8 +261,8 @@ func (c *collector) collectNetwork(ch chan<- prometheus.Metric) {
 	var totalReceiveRate, totalTransmitRate float64
 
 	for _, stat := range netStats {
-		// Skip loopback interface
-		if stat.Name == "lo" {
+		// Skip loopback and virtual interfaces
+		if c.isVirtualInterface(stat.Name) {
 			continue
 		}
 
@@ -242,7 +278,7 @@ func (c *collector) collectNetwork(ch chan<- prometheus.Metric) {
 		c.prevNetStats[stat.Name] = stat
 	}
 
-	c.prevTime = now
+	c.prevNetTime = now
 
 	ch <- prometheus.MustNewConstMetric(
 		c.networkReceiveBytes,
@@ -271,7 +307,7 @@ func (c *collector) collectDiskIOPS(ch chan<- prometheus.Metric) {
 	}
 
 	now := time.Now()
-	timeDiff := now.Sub(c.prevTime).Seconds()
+	timeDiff := now.Sub(c.prevDiskTime).Seconds()
 
 	if timeDiff <= 0 {
 		return
@@ -296,6 +332,8 @@ func (c *collector) collectDiskIOPS(ch chan<- prometheus.Metric) {
 
 		c.prevDiskStats[name] = stat
 	}
+
+	c.prevDiskTime = now
 
 	ch <- prometheus.MustNewConstMetric(
 		c.diskReadOps,
