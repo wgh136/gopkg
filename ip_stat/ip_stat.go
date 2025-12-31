@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	bucketSize = 1 * time.Minute
+	bucketSize = 5 * time.Minute
 )
 
 // IPStat is used to count the number of unique IPs in a given window. It is thread-safe.
